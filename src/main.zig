@@ -119,14 +119,9 @@ fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message
 // | World. |
 // +--------+
 // ```
-fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
-    // Memory allocator.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
+fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
     // Format the message so we can get the true length.
-    const message_formatted = try std.fmt.allocPrint(arena_allocator, message, args);
+    const message_formatted = try std.fmt.allocPrint(allocator, message, args);
 
     // Tokenize the formatted message by newlines.
     var iter_message = std.mem.tokenize(u8, message_formatted, "\n");
@@ -135,7 +130,7 @@ fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
     var len_line_max: usize = 0;
 
     // This will store each line of the string.
-    var message_new = std.ArrayList(u8).init(arena_allocator);
+    var message_new = std.ArrayList(u8).init(allocator);
     defer message_new.deinit();
 
     // For every line of the message.
@@ -150,7 +145,7 @@ fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
     while (iter_message.next()) |iter| {
         // TODO Need to add padding spaces between the text and the right box line so all the lines are the same length.
         // Surround the line of the message with a vertical box line.
-        try message_new.appendSlice(try characterSetDecimalLineDrawing(arena_allocator, ascii_codes.box_vertical, .{}));
+        try message_new.appendSlice(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
         try message_new.appendSlice(" ");
         try message_new.appendSlice(iter);
         try message_new.appendSlice(" ");
@@ -160,7 +155,7 @@ fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
             try message_new.appendSlice(" ");
         }
 
-        try message_new.appendSlice(try characterSetDecimalLineDrawing(arena_allocator, ascii_codes.box_vertical, .{}));
+        try message_new.appendSlice(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
         try message_new.appendSlice("\n");
     }
 
@@ -181,7 +176,7 @@ fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
     }
 
     try message_new.insertSlice(j, ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n");
-    try message_new.appendSlice(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii);
+    try message_new.appendSlice(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
 
     const message_return = message_new.items;
 
@@ -198,10 +193,14 @@ fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
 
 // Debug printing utility.
 fn printHeading(comptime message: []const u8, args: anytype) !void {
+    // Memory allocator.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
 
     // TODO Get coloured background to output as expected.
 
-    std.debug.print("{s}", .{try surroundBox(message, args)});
+    std.debug.print("{s}", .{try surroundBox(arena_allocator, message, args)});
 }
 
 // Debug printing utility.
@@ -278,19 +277,27 @@ pub fn main() !void {
         \\
     , .{});
 
-    try printHeading("Starting Serpentine.", .{});
-    defer printHeading("Ending Serpentine.", .{}) catch @panic("");
+    try printHeading(
+        \\Test
+        \\{d}.
+    , .{1});
 
-    std.debug.print("test", .{});
+    // try printHeading("Starting Serpentine.", .{});
+    // defer printHeading("Ending Serpentine.", .{}) catch @panic("");
 
     try manageArguments();
 }
 
 test "surround box" {
-    try std.testing.expect(surroundBox(
+    // Memory allocator.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    try std.testing.expect(surroundBox(arena_allocator,
         \\Surround
         \\box.
-    ) ==
+    , .{}) ==
         \\┌──────────┐
         \\│ Surround │
         \\│ box.     │
