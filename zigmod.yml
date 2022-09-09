@@ -1,0 +1,7 @@
+id: 35jnfowdb5xwelp2ytucl5lfhnsuum8m17bfua3fuvtlfeix
+name: serpentine
+license: None
+description: None
+root_dependencies:
+
+  - src: git https://github.com/Hejsil/zig-clap
