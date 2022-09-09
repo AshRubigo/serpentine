@@ -88,8 +88,8 @@ const ascii_codes = AsciiCodes{
 // TODO Put these functions in the `AsciiCodes` struct somehow.
 
 // Convenience function for enabling and disabling the decimal line drawing character set.
-fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) []const u8 {
-    return std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
+fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+    return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
 }
 
 // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
@@ -119,17 +119,18 @@ fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message
 // | World. |
 // +--------+
 // ```
-fn surroundBox(comptime message: []const u8, args: anytype) []const u8 {
+fn surroundBox(comptime message: []const u8, args: anytype) ![]const u8 {
     // Memory allocator.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
     // Format the message so we can get the true length.
-    const message_formatted = std.fmt.allocPrint(arena_allocator, message, args) catch @panic("String formatting failed.");
+    const message_formatted = try std.fmt.allocPrint(arena_allocator, message, args);
 
     // Tokenize the formatted message by newlines.
     var iter_message = std.mem.tokenize(u8, message_formatted, "\n");
+    var iter_message_2 = iter_message;
 
     var len_line_max: usize = 0;
 
@@ -138,40 +139,54 @@ fn surroundBox(comptime message: []const u8, args: anytype) []const u8 {
     defer message_new.deinit();
 
     // For every line of the message.
-    for (iter_message.next()) |iter| {
+    while (iter_message_2.next()) |iter| {
         // Update the length of the longest line.
         if (iter.len > len_line_max) {
             len_line_max = iter.len;
         }
+    }
 
+    // For every line of the message.
+    while (iter_message.next()) |iter| {
         // TODO Need to add padding spaces between the text and the right box line so all the lines are the same length.
         // Surround the line of the message with a vertical box line.
-        try message_new.appendSlice(characterSetDecimalLineDrawing(ascii_codes.box_vertical, .{}) ++ " ");
+        try message_new.appendSlice(try characterSetDecimalLineDrawing(arena_allocator, ascii_codes.box_vertical, .{}));
+        try message_new.appendSlice(" ");
         try message_new.appendSlice(iter);
-        try message_new.appendSlice(" " ++ characterSetDecimalLineDrawing(ascii_codes.box_vertical) ++ "\n");
+        try message_new.appendSlice(" ");
+
+        var n: usize = len_line_max - iter.len;
+        while (n != 0) : (n -= 1) {
+            try message_new.appendSlice(" ");
+        }
+
+        try message_new.appendSlice(try characterSetDecimalLineDrawing(arena_allocator, ascii_codes.box_vertical, .{}));
+        try message_new.appendSlice("\n");
     }
 
-    // `+5` because of the 2 box lines, 2 spaces, and the newline.
-    const len_line_max_new: usize = len_line_max + 5 + ((ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.character_set_ansii.len) * 2);
+    // // Create the horizontal lines for the box.
+    // //
+    // // Messages are variable in length, so this also needs to be.
+    // var horizontal = std.ArrayList(u8).init(arena_allocator);
+    // defer horizontal.deinit();
 
-    // Create the horizontal lines for the box.
-    //
-    // Messages are variable in length, so this also needs to be.
-    var horizontal_pre: [len_line_max_new * ascii_codes.box_horizontal.len + 2 * ascii_codes.box_horizontal.len]u8 = undefined;
-    var j: usize = 0;
-    for (horizontal_pre) |item| {
-        item = ascii_codes.box_horizontal[j];
-        j += 1;
-        if (j == ascii_codes.box_horizontal.len) j = 0;
+    try message_new.insertSlice(0, ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left);
+    try message_new.appendSlice(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+
+    var j: usize = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
+    // TODO Why `+ 6`, thought it would be `+ 4`?
+    while (j < (len_line_max + 6)) : (j += 1) {
+        try message_new.insertSlice(j, ascii_codes.box_horizontal);
+        try message_new.appendSlice(ascii_codes.box_horizontal);
     }
-    // TODO Not sure if this is necessary.
-    const horizontal = horizontal_pre;
 
-    // Prepend the top row of the box.
-    message_new.insertSlice(0, characterSetDecimalLineDrawing(ascii_codes.box_top_left) ++ horizontal ++ characterSetDecimalLineDrawing(ascii_codes.box_top_right));
+    try message_new.insertSlice(j, ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n");
+    try message_new.appendSlice(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii);
 
-    // Append the bottom row of the box.
-    message_new.appendSlice(characterSetDecimalLineDrawing(ascii_codes.box_bottom_left ++ horizontal ++ ascii_codes.box_bottom_right));
+    const message_return = message_new.items;
+
+    // TODO This is just here as a test.
+    std.debug.print("{s}", .{message_return});
 
     // Return the entire message.
     return message_new.items;
@@ -182,15 +197,15 @@ fn surroundBox(comptime message: []const u8, args: anytype) []const u8 {
 // TODO `fn printTitle()` Double box maybe? Is it even necessary?
 
 // Debug printing utility.
-fn printHeading(comptime message: []const u8, args: anytype) void {
+fn printHeading(comptime message: []const u8, args: anytype) !void {
 
     // TODO Get coloured background to output as expected.
 
-    std.debug.print("{s}", .{surroundBox(message, args)});
+    std.debug.print("{s}", .{try surroundBox(message, args)});
 }
 
 // Debug printing utility.
-fn printNormal(comptime message: []const u8, args: anytype) void {
+fn printNormal(comptime message: []const u8, args: anytype) !void {
     std.debug.print(ascii_codes.character_set_ansii ++ message ++ "\n", args);
 }
 
@@ -224,7 +239,7 @@ fn manageArguments() !void {
     defer arguments.deinit();
 
     if (arguments.args.help)
-        printNormal(
+        try printNormal(
             \\NAME
             \\    Serpentine
             \\
@@ -234,13 +249,13 @@ fn manageArguments() !void {
         , .{});
 
     if (arguments.args.@"test-number") |n|
-        printNormal("Test number = {}.", .{n});
+        try printNormal("Test number = {}.", .{n});
 
     for (arguments.args.@"test-string") |s|
-        printNormal("Test string = {s}.", .{s});
+        try printNormal("Test string = {s}.", .{s});
 
     for (arguments.positionals) |pos|
-        printNormal("{s}", .{pos});
+        try printNormal("{s}", .{pos});
 }
 
 // TODO Alternate text, not sure which looks better. Chose other style because the first character should be high.
@@ -252,7 +267,7 @@ fn manageArguments() !void {
 //|___/    |_|  |_|    \___|     |___| |_| |_|
 //
 pub fn main() !void {
-    printNormal(
+    try printNormal(
         \\                                _
         \\ ___      _ __        ___      | |_ _ _ __
         \\/ __| ___| '__| ___  / _ \_ __ | __(_) '_ \  ___
@@ -263,10 +278,22 @@ pub fn main() !void {
         \\
     , .{});
 
-    printHeading("Starting Serpentine.", .{});
-    defer printHeading("Ending Serpentine.", .{});
+    try printHeading("Starting Serpentine.", .{});
+    defer printHeading("Ending Serpentine.", .{}) catch @panic("");
 
-    printNormal("Test message.", .{});
+    std.debug.print("test", .{});
 
     try manageArguments();
+}
+
+test "surround box" {
+    try std.testing.expect(surroundBox(
+        \\Surround
+        \\box.
+    ) ==
+        \\┌──────────┐
+        \\│ Surround │
+        \\│ box.     │
+        \\└──────────┘
+    );
 }
