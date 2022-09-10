@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const clap = @import("clap");
+const zigstr = @import("zigstr");
 
 // TODO Test these ascii codes on Linux.
 // TODO Need to put this in the `AsciiCodes` struct. How to access within the struct?
@@ -92,121 +93,180 @@ fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message
     return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
 }
 
-// TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
-//
-// Return the input of a single or multiline string surrounded by a box, which can then be printed.
-// Utilizes the decimal line drawing character set for the box characters.
-//
-// Example:
-// ```
-// Input:
-// surroundBox(
-//   \\Hi
-//   \\World.
-//   ,.{});
-//
-// Output:
-// ┌────────┐
-// │ Hi     │
-// │ World. │
-// └────────┘
-// ```
-//
-// TODO Alternative to the decimal line drawing character set is the following. Not quite so neat.
-// ```
-// +--------+
-// | Hi     |
-// | World. |
-// +--------+
-// ```
-fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-    // Format the message so we can get the true length.
-    const message_formatted = try std.fmt.allocPrint(allocator, message, args);
+const P = struct {
+    _level: usize = 0,
 
-    // Tokenize the formatted message by newlines.
-    var iter_message = std.mem.tokenize(u8, message_formatted, "\n");
-    var iter_message_2 = iter_message;
+    fn i(self: *P) void {
+        self._level += 2;
+    }
 
-    var len_line_max: usize = 0;
+    fn o(self: *P) void {
+        self._level -= 2;
+    }
 
-    // This will store each line of the string.
-    var message_new = std.ArrayList(u8).init(allocator);
-    defer message_new.deinit();
+    // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
+    //
+    // TODO A limitation of this is that the line length count does not account for the ascii escape characters perfectly, so the input is restricted to multiline strings of normal characters and zig string escapes.
+    //
+    // Return the input of a single or multiline string surrounded by a box, which can then be printed.
+    // Utilizes the decimal line drawing character set for the box characters.
+    //
+    // Example:
+    // ```
+    // Input:
+    // surroundBox(
+    //   \\Hi
+    //   \\World.
+    //   ,.{});
+    //
+    // Output:
+    // ┌────────┐
+    // │ Hi     │
+    // │ World. │
+    // └────────┘
+    // ```
+    //
+    // TODO Alternative to the decimal line drawing character set is the following. Not quite so neat.
+    // ```
+    // +--------+
+    // | Hi     |
+    // | World. |
+    // +--------+
+    // ```
+    fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+        defer message_formatted.deinit();
 
-    // For every line of the message.
-    while (iter_message_2.next()) |iter| {
-        // Update the length of the longest line.
-        if (iter.len > len_line_max) {
-            len_line_max = iter.len;
+        // Tokenize the formatted message by newlines.
+        var iter_message_formatted = message_formatted.lineIter();
+        var iter_message_formatted_2 = iter_message_formatted;
+
+        var len_line_max: usize = 0;
+
+        var line = try zigstr.fromBytes(allocator, "");
+        defer line.deinit();
+
+        // TODO This should only count combining or visible characters.
+        // For every line of the message.
+        while (iter_message_formatted_2.next()) |iter| {
+            try line.reset(iter);
+            const iter_len = try line.graphemeCount();
+
+            // Update the length of the longest line.
+            if (iter_len > len_line_max) {
+                len_line_max = iter_len;
+            }
         }
-    }
 
-    // For every line of the message.
-    while (iter_message.next()) |iter| {
-        // TODO Need to add padding spaces between the text and the right box line so all the lines are the same length.
-        // Surround the line of the message with a vertical box line.
-        try message_new.appendSlice(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-        try message_new.appendSlice(" ");
-        try message_new.appendSlice(iter);
-        try message_new.appendSlice(" ");
+        // This will store each line of the string.
+        var message_new = try zigstr.fromBytes(allocator, "");
+        errdefer message_new.deinit();
 
-        var n: usize = len_line_max - iter.len;
-        while (n != 0) : (n -= 1) {
-            try message_new.appendSlice(" ");
+        // For every line of the message.
+        while (iter_message_formatted.next()) |iter| {
+            // TODO Need to add padding spaces between the text and the right box line so all the lines are the same length.
+            // Surround the line of the message with a vertical box line.
+            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat(" ");
+            try message_new.concat(iter);
+            try message_new.concat(" ");
+
+            var n: usize = len_line_max - iter.len;
+            while (n != 0) : (n -= 1) {
+                try message_new.concat(" ");
+            }
+
+            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat("\n");
         }
 
-        try message_new.appendSlice(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-        try message_new.appendSlice("\n");
+        // // Create the horizontal lines for the box.
+        // //
+        // // Messages are variable in length, so this also needs to be.
+        // var horizontal = std.ArrayList(u8).init(arena_allocator);
+        // defer horizontal.deinit();
+
+        try message_new.insert(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left, 0);
+        try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+
+        const len_top_left = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
+
+        var j: usize = len_top_left;
+
+        while (j < (len_line_max + len_top_left + 2)) : (j += 1) {
+            try message_new.insert(ascii_codes.box_horizontal, j);
+            try message_new.concat(ascii_codes.box_horizontal);
+        }
+
+        try message_new.insert(ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n", j);
+        try message_new.concat(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
+
+        // Return the entire message.
+        return message_new.toOwnedSlice();
     }
 
-    // // Create the horizontal lines for the box.
-    // //
-    // // Messages are variable in length, so this also needs to be.
-    // var horizontal = std.ArrayList(u8).init(arena_allocator);
-    // defer horizontal.deinit();
+    // Indent using spaces.
+    fn dent(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype, indentations: usize) ![]const u8 {
+        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+        defer message_formatted.deinit();
 
-    try message_new.insertSlice(0, ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left);
-    try message_new.appendSlice(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+        // Tokenize the formatted message by newlines.
+        var iter_message_formatted = message_formatted.lineIter();
 
-    var j: usize = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
-    // TODO Why `+ 6`, thought it would be `+ 4`?
-    while (j < (len_line_max + 6)) : (j += 1) {
-        try message_new.insertSlice(j, ascii_codes.box_horizontal);
-        try message_new.appendSlice(ascii_codes.box_horizontal);
+        // This will store each line of the string.
+        var message_new = try zigstr.fromBytes(allocator, "");
+        errdefer message_new.deinit();
+
+        var string_spaces = try zigstr.fromBytes(allocator, "  ");
+        defer string_spaces.deinit();
+
+        try string_spaces.repeat(indentations);
+
+        const spaces: []const u8 = try string_spaces.toOwnedSlice();
+
+        // For every line of the message.
+        while (iter_message_formatted.next()) |iter| {
+            try message_new.concat(spaces);
+            try message_new.concat(iter);
+            try message_new.concat("\n");
+        }
+
+        return message_new.toOwnedSlice();
     }
 
-    try message_new.insertSlice(j, ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n");
-    try message_new.appendSlice(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
+    // TODO Implement indentation for the debug printing functions, which is helpful for debugging. `p.u(); defer p.d();` for `print.indent(); print.outdent();`.
 
-    const message_return = message_new.items;
+    // Debug printing utility.
+    fn printHeading(self: *P, comptime message: []const u8, args: anytype) !void {
+        // Memory allocator.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
 
-    // TODO This is just here as a test.
-    std.debug.print("{s}", .{message_return});
+        // TODO Get coloured background to output as expected.
 
-    // Return the entire message.
-    return message_new.items;
-}
+        const surrounded: []const u8 = try self.surroundBox(arena_allocator, message, args);
+        const dented: []const u8 = try self.dent(arena_allocator, "{s}", .{surrounded}, self._level);
 
-// TODO Implement indentation for the debug printing functions, which is helpful for debugging. `p.u(); defer p.d();` for `print.indent(); print.outdent();`.
+        std.debug.print("{s}", .{dented});
+    }
 
-// TODO `fn printTitle()` Double box maybe? Is it even necessary?
+    // Debug printing utility.
+    fn printNormal(self: *P, comptime message: []const u8, args: anytype) !void {
+        // Memory allocator.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
 
-// Debug printing utility.
-fn printHeading(comptime message: []const u8, args: anytype) !void {
-    // Memory allocator.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
+        const surrounded: []const u8 = try surroundBox(arena_allocator, ascii_codes.character_set_ansii ++ message ++ "\n", args);
+        const dented: []const u8 = try dent(arena_allocator, "{s}", .{surrounded}, self._level);
 
-    // TODO Get coloured background to output as expected.
+        std.debug.print("{s}", .{dented});
+    }
+};
 
-    std.debug.print("{s}", .{try surroundBox(arena_allocator, message, args)});
-}
-
-// Debug printing utility.
-fn printNormal(comptime message: []const u8, args: anytype) !void {
-    std.debug.print(ascii_codes.character_set_ansii ++ message ++ "\n", args);
-}
+var p = P{};
 
 fn manageArguments() !void {
     // Specify what parameters our program can take.
@@ -238,52 +298,41 @@ fn manageArguments() !void {
     defer arguments.deinit();
 
     if (arguments.args.help)
-        try printNormal(
+        try p.printNormal(
             \\NAME
             \\    Serpentine
             \\
             \\SYNOPSIS
             \\    TODO
-            \\
         , .{});
 
     if (arguments.args.@"test-number") |n|
-        try printNormal("Test number = {}.", .{n});
+        try p.printNormal("Test number = {}.", .{n});
 
     for (arguments.args.@"test-string") |s|
-        try printNormal("Test string = {s}.", .{s});
+        try p.printNormal("Test string = {s}.", .{s});
 
     for (arguments.positionals) |pos|
-        try printNormal("{s}", .{pos});
+        try p.printNormal("{s}", .{pos});
 }
 
-// TODO Alternate text, not sure which looks better. Chose other style because the first character should be high.
-//                                    _
-//      ___      _ ___      _ __  _  (_)       ___
-// ___ / _ \_ __| '_  \ ___| '_ \| |_| | __   / _ \
-/// __|  __/ '__| |_)  | _ \ | | | __| | '_ \|  __/
-//\__ \\___| |  | .___/  __/_| |_| |_|_| | | |\___|
-//|___/    |_|  |_|    \___|     |___| |_| |_|
-//
 pub fn main() !void {
-    try printNormal(
+    try p.printNormal(
         \\                                _
         \\ ___      _ __        ___      | |_ _ _ __
         \\/ __| ___| '__| ___  / _ \_ __ | __(_) '_ \  ___
         \\\__ \/ _ \ | | '_  \|  __/ '_ \| |_| | | | |/ _ \
         \\|___/  __/_| | |_)  |\___| | | |___| |_| |_|  __/
         \\     \___|   | .___/     |_| |_|   |_|      \___|
-        \\             |_|
+        \\             |_|                           __
+        \\|\      _____      ______      _____      / o\__/
+        \\| \____/ ___ \____/ ____ \____/ ___ \____/ __/  \
+        \\ \______/   \______/    \______/   \______/
         \\
     , .{});
 
-    try printHeading(
-        \\Test
-        \\{d}.
-    , .{1});
-
-    // try printHeading("Starting Serpentine.", .{});
-    // defer printHeading("Ending Serpentine.", .{}) catch @panic("");
+    try p.printHeading("Starting Serpentine.", .{});
+    defer p.printHeading("Ending Serpentine.", .{}) catch @panic("");
 
     try manageArguments();
 }
@@ -294,7 +343,7 @@ test "surround box" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    try std.testing.expect(surroundBox(arena_allocator,
+    try std.testing.expect(p.surroundBox(arena_allocator,
         \\Surround
         \\box.
     , .{}) ==
