@@ -86,13 +86,6 @@ const ascii_codes = AsciiCodes{
     .box_cross = "n",
 };
 
-// TODO Put these functions in the `AsciiCodes` struct somehow.
-
-// Convenience function for enabling and disabling the decimal line drawing character set.
-fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-    return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
-}
-
 const P = struct {
     _level: usize = 0,
 
@@ -104,12 +97,17 @@ const P = struct {
         self._level -= 2;
     }
 
+    // Convenience function for enabling and disabling the decimal line drawing character set.
+    fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+        return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
+    }
+
     // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
-    //
-    // TODO A limitation of this is that the line length count does not account for the ascii escape characters perfectly, so the input is restricted to multiline strings of normal characters and zig string escapes.
     //
     // Return the input of a single or multiline string surrounded by a box, which can then be printed.
     // Utilizes the decimal line drawing character set for the box characters.
+    //
+    // A limitation of this is that the line length count does not account for the ascii escape characters for the terminal perfectly, so the input is restricted to multiline strings of UTF-8 characters and zig string escapes.
     //
     // Example:
     // ```
@@ -133,7 +131,7 @@ const P = struct {
     // | World. |
     // +--------+
     // ```
-    fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+    fn surroundBox(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
         // Format the message so we can get the true length, and convert it to a more useful string.
         var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
         defer message_formatted.deinit();
@@ -144,14 +142,15 @@ const P = struct {
 
         var len_line_max: usize = 0;
 
-        var line = try zigstr.fromBytes(allocator, "");
-        defer line.deinit();
+        var message_line = try zigstr.fromBytes(allocator, "");
+        defer message_line.deinit();
 
-        // TODO This should only count combining or visible characters.
+        // TODO This should only count combining or visible characters. That may involve accounting for specific terminals.
+        //
         // For every line of the message.
         while (iter_message_formatted_2.next()) |iter| {
-            try line.reset(iter);
-            const iter_len = try line.graphemeCount();
+            try message_line.reset(iter);
+            const iter_len = try message_line.graphemeCount();
 
             // Update the length of the longest line.
             if (iter_len > len_line_max) {
@@ -165,27 +164,21 @@ const P = struct {
 
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
-            // TODO Need to add padding spaces between the text and the right box line so all the lines are the same length.
             // Surround the line of the message with a vertical box line.
-            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat(try self.characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
             try message_new.concat(" ");
             try message_new.concat(iter);
             try message_new.concat(" ");
 
+            // Add padding spaces between the text and the right box line so all the lines are the same length.
             var n: usize = len_line_max - iter.len;
             while (n != 0) : (n -= 1) {
                 try message_new.concat(" ");
             }
 
-            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat(try self.characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
             try message_new.concat("\n");
         }
-
-        // // Create the horizontal lines for the box.
-        // //
-        // // Messages are variable in length, so this also needs to be.
-        // var horizontal = std.ArrayList(u8).init(arena_allocator);
-        // defer horizontal.deinit();
 
         try message_new.insert(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left, 0);
         try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
@@ -194,6 +187,9 @@ const P = struct {
 
         var j: usize = len_top_left;
 
+        // Create the horizontal lines for the box.
+        //
+        // Messages are variable in length, so this also needs to be.
         while (j < (len_line_max + len_top_left + 2)) : (j += 1) {
             try message_new.insert(ascii_codes.box_horizontal, j);
             try message_new.concat(ascii_codes.box_horizontal);
@@ -259,8 +255,8 @@ const P = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        const surrounded: []const u8 = try surroundBox(arena_allocator, ascii_codes.character_set_ansii ++ message ++ "\n", args);
-        const dented: []const u8 = try dent(arena_allocator, "{s}", .{surrounded}, self._level);
+        const surrounded: []const u8 = try self.surroundBox(arena_allocator, ascii_codes.character_set_ansii ++ message ++ "\n", args);
+        const dented: []const u8 = try self.dent(arena_allocator, "{s}", .{surrounded}, self._level);
 
         std.debug.print("{s}", .{dented});
     }
