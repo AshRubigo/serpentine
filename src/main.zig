@@ -86,13 +86,16 @@ const ascii_codes = AsciiCodes{
     .box_cross = "n",
 };
 
+// Print utility struct.
 const P = struct {
     _level: usize = 0,
 
+    // Indent. Do this at the start of functions and defer P.o() to outdent.
     fn i(self: *P) void {
         self._level += 2;
     }
 
+    // Outdent.
     fn o(self: *P) void {
         self._level -= 2;
     }
@@ -131,7 +134,7 @@ const P = struct {
     // | World. |
     // +--------+
     // ```
-    fn surroundBox(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+    fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
         // Format the message so we can get the true length, and convert it to a more useful string.
         var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
         defer message_formatted.deinit();
@@ -165,7 +168,7 @@ const P = struct {
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
             // Surround the line of the message with a vertical box line.
-            try message_new.concat(try self.characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
             try message_new.concat(" ");
             try message_new.concat(iter);
             try message_new.concat(" ");
@@ -176,7 +179,7 @@ const P = struct {
                 try message_new.concat(" ");
             }
 
-            try message_new.concat(try self.characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
             try message_new.concat("\n");
         }
 
@@ -199,7 +202,7 @@ const P = struct {
         try message_new.concat(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
 
         // Return the entire message.
-        return message_new.toOwnedSlice();
+        return try message_new.toOwnedSlice();
     }
 
     // Indent using spaces.
@@ -231,8 +234,6 @@ const P = struct {
         return message_new.toOwnedSlice();
     }
 
-    // TODO Implement indentation for the debug printing functions, which is helpful for debugging. `p.u(); defer p.d();` for `print.indent(); print.outdent();`.
-
     // Debug printing utility.
     fn printHeading(self: *P, comptime message: []const u8, args: anytype) !void {
         // Memory allocator.
@@ -242,8 +243,8 @@ const P = struct {
 
         // TODO Get coloured background to output as expected.
 
-        const surrounded: []const u8 = try self.surroundBox(arena_allocator, message, args);
-        const dented: []const u8 = try self.dent(arena_allocator, "{s}", .{surrounded}, self._level);
+        const surrounded: []const u8 = try surroundBox(arena_allocator, message, args);
+        const dented: []const u8 = try dent(arena_allocator, "{s}", .{surrounded}, self._level);
 
         std.debug.print("{s}", .{dented});
     }
@@ -255,8 +256,7 @@ const P = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        const surrounded: []const u8 = try self.surroundBox(arena_allocator, ascii_codes.character_set_ansii ++ message ++ "\n", args);
-        const dented: []const u8 = try self.dent(arena_allocator, "{s}", .{surrounded}, self._level);
+        const dented: []const u8 = try dent(arena_allocator, message ++ "\n", .{args}, self._level);
 
         std.debug.print("{s}", .{dented});
     }
@@ -303,7 +303,7 @@ fn manageArguments() !void {
         , .{});
 
     if (arguments.args.@"test-number") |n|
-        try p.printNormal("Test number = {}.", .{n});
+        try p.printNormal("Test number = {d}.", .{n});
 
     for (arguments.args.@"test-string") |s|
         try p.printNormal("Test string = {s}.", .{s});
