@@ -141,7 +141,6 @@ const P = struct {
 
         // Tokenize the formatted message by newlines.
         var iter_message_formatted = message_formatted.lineIter();
-        var iter_message_formatted_2 = iter_message_formatted;
 
         var len_line_max: usize = 0;
 
@@ -151,7 +150,7 @@ const P = struct {
         // TODO This should only count combining or visible characters. That may involve accounting for specific terminals.
         //
         // For every line of the message.
-        while (iter_message_formatted_2.next()) |iter| {
+        while (iter_message_formatted.next()) |iter| {
             try message_line.reset(iter);
             const iter_len = try message_line.graphemeCount();
 
@@ -164,6 +163,8 @@ const P = struct {
         // This will store each line of the string.
         var message_new = try zigstr.fromBytes(allocator, "");
         errdefer message_new.deinit();
+
+        iter_message_formatted.reset();
 
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
@@ -205,8 +206,8 @@ const P = struct {
         return try message_new.toOwnedSlice();
     }
 
-    // Indent using spaces.
-    fn dent(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype, indentations: usize) ![]const u8 {
+    // Indent using spaces, each indentation is 2 spaces.
+    fn indent(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype, indentations: usize) ![]const u8 {
         var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
         defer message_formatted.deinit();
 
@@ -217,23 +218,34 @@ const P = struct {
         var message_new = try zigstr.fromBytes(allocator, "");
         errdefer message_new.deinit();
 
-        var string_spaces = try zigstr.fromBytes(allocator, "  ");
+        var string_spaces = try zigstr.fromBytes(allocator, " ");
         defer string_spaces.deinit();
 
+        // Repeat the string by the number of indentations required.
         try string_spaces.repeat(indentations);
 
         const spaces: []const u8 = try string_spaces.toOwnedSlice();
 
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
-            try message_new.concat(spaces);
+            // If the last line of the input message has a `\n` at the end of it, then the tokenization will count that as a blank line, so we don't want to add spaces for that last line.
+            if (iter.len > 1) {
+                try message_new.concat(spaces);
+            }
             try message_new.concat(iter);
-            try message_new.concat("\n");
+
+            var iter_message_formatted_next = iter_message_formatted;
+
+            if (iter_message_formatted_next.next() != null) {
+                try message_new.concat("\n");
+            }
         }
 
         return message_new.toOwnedSlice();
     }
 
+    // TODO make box max width of terminal, while accounting for indentations
+    //
     // Debug printing utility.
     fn printHeading(self: *P, comptime message: []const u8, args: anytype) !void {
         // Memory allocator.
@@ -244,9 +256,9 @@ const P = struct {
         // TODO Get coloured background to output as expected.
 
         const surrounded: []const u8 = try surroundBox(arena_allocator, message, args);
-        const dented: []const u8 = try dent(arena_allocator, "{s}", .{surrounded}, self._level);
+        const indented: []const u8 = try indent(arena_allocator, "{s}", .{surrounded}, self._level);
 
-        std.debug.print("{s}", .{dented});
+        std.debug.print("{s}", .{indented});
     }
 
     // Debug printing utility.
@@ -256,9 +268,9 @@ const P = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        const dented: []const u8 = try dent(arena_allocator, message ++ "\n", .{args}, self._level);
+        const indented: []const u8 = try indent(arena_allocator, message ++ "\n", args, self._level);
 
-        std.debug.print("{s}", .{dented});
+        std.debug.print("{s}", .{indented});
     }
 };
 
@@ -269,6 +281,8 @@ fn manageArguments() !void {
     // Can use `parseParamsComptime` to parse a string into an array of `Param(Help)`.
     //
     // Short arguments must be only 1 letter long.
+    //
+    // TODO Print this when `-h` is used.
     const params =
         comptime clap.parseParamsComptime(
         \\-h, --help                   Display this help and exit.
@@ -339,7 +353,7 @@ test "surround box" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    try std.testing.expect(p.surroundBox(arena_allocator,
+    try std.testing.expect(try p.surroundBox(arena_allocator,
         \\Surround
         \\box.
     , .{}) ==
