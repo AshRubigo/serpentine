@@ -3,6 +3,7 @@
 const std = @import("std");
 const clap = @import("clap");
 const zigstr = @import("zigstr");
+const ziglyph = @import("ziglyph");
 
 // TODO Test these ascii codes on Linux.
 // TODO Need to put this in the `AsciiCodes` struct. How to access within the struct?
@@ -86,6 +87,16 @@ const ascii_codes = AsciiCodes{
     .box_cross = "n",
 };
 
+fn widthConsoleScreenBuffer() usize {
+    var terminal: std.fs.File = std.io.getStdErr();
+
+    var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+
+    _ = std.os.windows.kernel32.GetConsoleScreenBufferInfo(terminal.handle, &info);
+
+    return @intCast(usize, info.dwSize.X);
+}
+
 // Print utility struct.
 const P = struct {
     _level: usize = 0,
@@ -103,6 +114,169 @@ const P = struct {
     // Convenience function for enabling and disabling the decimal line drawing character set.
     fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
         return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
+    }
+
+    fn lenLineMax(self: *P, allocator: std.mem.Allocator, message_formatted: zigstr, padding: usize) !usize {
+        // Tokenize the formatted message by newlines.
+        var iter_message_formatted = message_formatted.lineIter();
+
+        var len_line_max: usize = 0;
+
+        var message_line = try zigstr.fromBytes(allocator, "");
+        defer message_line.deinit();
+
+        // TODO This should only count combining or visible characters. That may involve accounting for specific terminals.
+        //
+        // For every line of the message.
+        while (iter_message_formatted.next()) |iter| {
+            try message_line.reset(iter);
+            const iter_len = try message_line.graphemeCount();
+
+            // Update the length of the longest line.
+            if (iter_len > len_line_max) {
+                len_line_max = iter_len;
+            }
+        }
+
+        const width_console_screen_buffer = widthConsoleScreenBuffer();
+
+        if (len_line_max > width_console_screen_buffer - self._level - padding) {
+            len_line_max = width_console_screen_buffer - self._level - padding;
+        }
+
+        return len_line_max;
+    }
+
+    fn surroundBox(self: *P, allocator: std.mem.Allocator, message_formatted: zigstr, len_line_max: usize) ![]const u8 {
+        // Tokenize the formatted message by newlines.
+        var iter_message_formatted = message_formatted.lineIter();
+
+        // This will store each line of the string.
+        var message_new = try zigstr.fromBytes(allocator, "");
+        errdefer message_new.deinit();
+
+        iter_message_formatted.reset();
+
+        var message_line = try zigstr.fromBytes(allocator, "");
+        defer message_line.deinit();
+
+        const spaces: []const u8 = try self.generate_spaces(allocator);
+
+        // For every line of the message.
+        while (iter_message_formatted.next()) |iter| {
+            // Surround the line of the message with a vertical box line.
+
+            try message_line.reset(iter);
+
+            var grapheme_count: usize = try message_line.graphemeCount();
+
+            // If the line is longer than can fit.
+            if (grapheme_count > len_line_max) {
+                var start_slice: usize = 0;
+                var end_slice: usize = 0;
+
+                // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
+                while (true) {
+                    try message_new.concat(spaces);
+                    try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                    try message_new.concat(" ");
+
+                    // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
+                    end_slice = if (start_slice + len_line_max < iter.len) start_slice + len_line_max else iter.len;
+
+                    var slice = iter[start_slice..end_slice];
+
+                    std.debug.print("start slice: {d}, end slice: {d}, iter length: {d}, max line length: {d}, console width: {d}, slice len: {d}, grapheme count: {d}.\n", .{ start_slice, end_slice, iter.len, len_line_max, widthConsoleScreenBuffer(), slice.len, grapheme_count });
+
+                    try message_new.concat(slice);
+
+                    // If the length of the slice is less than the max line length.
+                    // If the slice doesn't fill the max line length.
+                    if (slice.len < len_line_max) {
+                        std.debug.print("entuhenu\n", .{});
+
+                        // Add padding spaces between the text and the right box line so all the lines are the same length.
+                        var n: usize = len_line_max - slice.len + 1;
+                        while (n != 0) : (n -= 1) {
+                            try message_new.concat(" ");
+                        }
+
+                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                        try message_new.concat("\n");
+
+                        break;
+                    }
+                    // If the slice fills the max line length.
+                    else {
+                        try message_new.concat(" ");
+
+                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                        try message_new.concat("\n");
+                    }
+
+                    start_slice += len_line_max;
+
+                    if (start_slice > iter.len) {
+                        break;
+                    }
+                }
+            }
+            // If the line fits.
+            else {
+                try message_new.concat(spaces);
+                try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                try message_new.concat(" ");
+
+                try message_new.concat(iter);
+                try message_new.concat(" ");
+
+                // Add padding spaces between the text and the right box line so all the lines are the same length.
+                var n: usize = len_line_max - iter.len;
+                while (n != 0) : (n -= 1) {
+                    try message_new.concat(" ");
+                }
+
+                try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                try message_new.concat("\n");
+            }
+        }
+
+        try message_new.insert(spaces, 0);
+        try message_new.insert(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left, self._level);
+        try message_new.concat(spaces);
+        try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+
+        const len_top_left = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
+
+        var j: usize = len_top_left + self._level;
+
+        // Create the horizontal lines for the box.
+        //
+        // Messages are variable in length, so this also needs to be.
+        while (j < (len_line_max + len_top_left + 2 + self._level)) : (j += 1) {
+            try message_new.insert(ascii_codes.box_horizontal, j);
+            try message_new.concat(ascii_codes.box_horizontal);
+        }
+
+        try message_new.insert(ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n", j);
+        try message_new.concat(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
+
+        // Return the entire message.
+        return try message_new.toOwnedSlice();
+    }
+
+    // TODO For every word, add to the length, store the word, if the next word plus any punctuation is excess, treat line up to that point as the current line
+    // Determine useful line max
+    // insert newlines where necessary
+    // pad to terminal width
+    //
+    // surroundbox would need to be aware of the number of indentations
+    fn surroundBoxMax(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+        defer message_formatted.deinit();
+
+        return try self.surroundBox(allocator, message_formatted, widthConsoleScreenBuffer() - 4 - self._level);
     }
 
     // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
@@ -134,7 +308,16 @@ const P = struct {
     // | World. |
     // +--------+
     // ```
-    fn surroundBox(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+    fn surroundBoxFit(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+        defer message_formatted.deinit();
+
+        return try self.surroundBox(allocator, message_formatted, try self.lenLineMax(allocator, message_formatted, 4));
+    }
+
+    // TODO Take input, wrap it in preparation for indent()
+    fn wrap(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
         // Format the message so we can get the true length, and convert it to a more useful string.
         var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
         defer message_formatted.deinit();
@@ -142,73 +325,73 @@ const P = struct {
         // Tokenize the formatted message by newlines.
         var iter_message_formatted = message_formatted.lineIter();
 
-        var len_line_max: usize = 0;
+        // Determine the longest line.
+        const len_line_max: usize = try self.lenLineMax(allocator, message_formatted, 0);
+
+        iter_message_formatted.reset();
+
+        // This will store each line of the output string.
+        var message_new = try zigstr.fromBytes(allocator, "");
+        errdefer message_new.deinit();
 
         var message_line = try zigstr.fromBytes(allocator, "");
         defer message_line.deinit();
 
-        // TODO This should only count combining or visible characters. That may involve accounting for specific terminals.
-        //
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
             try message_line.reset(iter);
-            const iter_len = try message_line.graphemeCount();
 
-            // Update the length of the longest line.
-            if (iter_len > len_line_max) {
-                len_line_max = iter_len;
+            const grapheme_count: usize = try message_line.graphemeCount();
+
+            // If the line is longer than can fit.
+            if (grapheme_count > len_line_max) {
+                var start_slice: usize = 0;
+                var end_slice: usize = 0;
+
+                // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
+                while (true) {
+                    // TODO Need to wrap by words.
+
+                    // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
+                    end_slice = if (start_slice + len_line_max < iter.len) len_line_max else iter.len;
+
+                    //std.debug.print("start slice: {d}, end slice: {d}, iter length: {d}, console width: {d}.\n", .{ start_slice, end_slice, iter.len, len_line_max });
+
+                    var slice = iter[start_slice..end_slice];
+                    try message_new.concat(slice);
+                    try message_new.concat("\n");
+
+                    start_slice += len_line_max;
+
+                    if (start_slice >= iter.len) {
+                        break;
+                    }
+                }
+            }
+            // If the line fits.
+            else {
+                try message_new.concat(iter);
+                try message_new.concat("\n");
             }
         }
-
-        // This will store each line of the string.
-        var message_new = try zigstr.fromBytes(allocator, "");
-        errdefer message_new.deinit();
-
-        iter_message_formatted.reset();
-
-        // For every line of the message.
-        while (iter_message_formatted.next()) |iter| {
-            // Surround the line of the message with a vertical box line.
-            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            try message_new.concat(" ");
-            try message_new.concat(iter);
-            try message_new.concat(" ");
-
-            // Add padding spaces between the text and the right box line so all the lines are the same length.
-            var n: usize = len_line_max - iter.len;
-            while (n != 0) : (n -= 1) {
-                try message_new.concat(" ");
-            }
-
-            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            try message_new.concat("\n");
-        }
-
-        try message_new.insert(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left, 0);
-        try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
-
-        const len_top_left = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
-
-        var j: usize = len_top_left;
-
-        // Create the horizontal lines for the box.
-        //
-        // Messages are variable in length, so this also needs to be.
-        while (j < (len_line_max + len_top_left + 2)) : (j += 1) {
-            try message_new.insert(ascii_codes.box_horizontal, j);
-            try message_new.concat(ascii_codes.box_horizontal);
-        }
-
-        try message_new.insert(ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n", j);
-        try message_new.concat(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
 
         // Return the entire message.
         return try message_new.toOwnedSlice();
     }
 
+    fn generate_spaces(self: *P, allocator: std.mem.Allocator) ![]const u8 {
+        var string_spaces = try zigstr.fromBytes(allocator, " ");
+        defer string_spaces.deinit();
+
+        // Repeat the spaces by the number of indentations required.
+        try string_spaces.repeat(self._level);
+
+        return try string_spaces.toOwnedSlice();
+    }
+
     // Indent using spaces, each indentation is 2 spaces.
-    fn indent(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype, indentations: usize) ![]const u8 {
-        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+    fn indent(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+        var message_formatted = try zigstr.fromBytes(allocator, try self.wrap(allocator, message, args));
         defer message_formatted.deinit();
 
         // Tokenize the formatted message by newlines.
@@ -218,13 +401,7 @@ const P = struct {
         var message_new = try zigstr.fromBytes(allocator, "");
         errdefer message_new.deinit();
 
-        var string_spaces = try zigstr.fromBytes(allocator, " ");
-        defer string_spaces.deinit();
-
-        // Repeat the string by the number of indentations required.
-        try string_spaces.repeat(indentations);
-
-        const spaces: []const u8 = try string_spaces.toOwnedSlice();
+        const spaces: []const u8 = try self.generate_spaces(allocator);
 
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
@@ -255,10 +432,10 @@ const P = struct {
 
         // TODO Get coloured background to output as expected.
 
-        const surrounded: []const u8 = try surroundBox(arena_allocator, message, args);
-        const indented: []const u8 = try indent(arena_allocator, "{s}", .{surrounded}, self._level);
+        const surrounded: []const u8 = try self.surroundBoxFit(arena_allocator, message, args);
+        //const indented: []const u8 = try self.indent(arena_allocator, "{s}", .{surrounded});
 
-        std.debug.print("{s}", .{indented});
+        std.debug.print("{s}", .{surrounded});
     }
 
     // Debug printing utility.
@@ -268,7 +445,9 @@ const P = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        const indented: []const u8 = try indent(arena_allocator, message ++ "\n", args, self._level);
+        // TODO Account for max width of the console so wrapping is properly wrapped.
+
+        const indented = try self.indent(arena_allocator, message ++ "\n", args);
 
         std.debug.print("{s}", .{indented});
     }
@@ -343,6 +522,19 @@ pub fn main() !void {
 
     try p.printHeading("Starting Serpentine.", .{});
     defer p.printHeading("Ending Serpentine.", .{}) catch @panic("");
+
+    p.i();
+    p.i();
+    try p.printNormal(
+        \\A-test-sentence-that-has-no-repeating-words-which-is-assisting-in-determining-what-error-bares-responibility-of-erroneous-output.
+        \\Test line short.
+    , .{});
+    try p.printHeading(
+        \\A-test-sentence-that-has-no-repeating-words-which-is-assisting-in-determining-what-error-bares-responibility-of-erroneous-output.
+        \\Test line short.
+    , .{});
+    p.o();
+    p.o();
 
     try manageArguments();
 }

@@ -6,3 +6,4 @@ root_dependencies:
 
   - src: git https://github.com/Hejsil/zig-clap
   - src: git https://github.com/jecolon/zigstr
+  - src: git https://github.com/jecolon/ziglyph
