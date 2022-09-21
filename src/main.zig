@@ -147,6 +147,7 @@ const P = struct {
         return len_line_max;
     }
 
+    // TODO For every word, add to the length, store the word, if the next word plus any punctuation is excess, treat line up to that point as the current line
     fn surroundBox(self: *P, allocator: std.mem.Allocator, message_formatted: zigstr, len_line_max: usize) ![]const u8 {
         // Tokenize the formatted message by newlines.
         var iter_message_formatted = message_formatted.lineIter();
@@ -155,90 +156,157 @@ const P = struct {
         var message_new = try zigstr.fromBytes(allocator, "");
         errdefer message_new.deinit();
 
-        iter_message_formatted.reset();
-
         var message_line = try zigstr.fromBytes(allocator, "");
         defer message_line.deinit();
+
+        var message_line_wrapped = try zigstr.fromBytes(allocator, "");
+        defer message_line_wrapped.deinit();
+
+        var temp_word = try zigstr.fromBytes(allocator, "");
+        defer temp_word.deinit();
+
+        var message_word = try zigstr.fromBytes(allocator, "");
+        defer message_word.deinit();
+
+        iter_message_formatted.reset();
 
         const spaces: []const u8 = try self.generate_spaces(allocator);
 
         // For every line of the message.
-        while (iter_message_formatted.next()) |iter| {
-            // Surround the line of the message with a vertical box line.
+        while (iter_message_formatted.next()) |line| {
+            try message_line.reset(line);
 
-            try message_line.reset(iter);
+            var iter_word = try ziglyph.Word.WordIterator.init(line);
 
-            var grapheme_count: usize = try message_line.graphemeCount();
+            // For every word of the line.
+            while (iter_word.next()) |word| {
+                try temp_word.reset(word.bytes);
 
-            // If the line is longer than can fit.
-            if (grapheme_count > len_line_max) {
-                var start_slice: usize = 0;
-                var end_slice: usize = 0;
+                // If this 'word' is just spaces.
+                if (try temp_word.isBlank()) {
+                    // If the word fits in the console.
+                    if ((try message_line_wrapped.graphemeCount()) + (try message_word.graphemeCount()) + 1 < len_line_max) {
+                        try message_line_wrapped.concat(" ");
+                        try message_line_wrapped.concat(message_word.bytes.items);
+                    }
+                    // If the word does not fit in the console.
+                    else {
+                        try message_new.concat(spaces);
+                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                        try message_new.concat(" ");
+                        try message_new.concat(message_line_wrapped.bytes.items);
 
-                // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
-                while (true) {
-                    try message_new.concat(spaces);
-                    try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                    try message_new.concat(" ");
+                        // If the length of the slice is less than the max line length.
+                        // If the slice doesn't fill the max line length.
+                        if ((try message_line_wrapped.graphemeCount()) < len_line_max) {
+                            // DELETED
+                            //std.debug.print("entuhenu\n", .{});
 
-                    // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
-                    end_slice = if (start_slice + len_line_max < iter.len) start_slice + len_line_max else iter.len;
+                            // DELETED
+                            // var blah: usize = 0;
+                            // if (@subWithOverflow(usize, len_line_max, (try message_line_wrapped.graphemeCount()) + 1, &blah)) {
+                            //     @panic("aousnthu");
+                            // }
 
-                    var slice = iter[start_slice..end_slice];
+                            // Add padding spaces between the text and the right box line so all the lines are the same length.
+                            var n: usize = len_line_max - (try message_line_wrapped.graphemeCount()) + 1;
 
-                    std.debug.print("start slice: {d}, end slice: {d}, iter length: {d}, max line length: {d}, console width: {d}, slice len: {d}, grapheme count: {d}.\n", .{ start_slice, end_slice, iter.len, len_line_max, widthConsoleScreenBuffer(), slice.len, grapheme_count });
+                            while (n != 0) : (n -= 1) {
+                                try message_new.concat(" ");
+                            }
 
-                    try message_new.concat(slice);
+                            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                            try message_new.concat("\n");
 
-                    // If the length of the slice is less than the max line length.
-                    // If the slice doesn't fill the max line length.
-                    if (slice.len < len_line_max) {
-                        std.debug.print("entuhenu\n", .{});
-
-                        // Add padding spaces between the text and the right box line so all the lines are the same length.
-                        var n: usize = len_line_max - slice.len + 1;
-                        while (n != 0) : (n -= 1) {
+                            break;
+                        }
+                        // If the slice fills the max line length.
+                        else {
                             try message_new.concat(" ");
+
+                            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+                            try message_new.concat("\n");
                         }
 
-                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                        try message_new.concat("\n");
-
-                        break;
-                    }
-                    // If the slice fills the max line length.
-                    else {
-                        try message_new.concat(" ");
-
-                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                        try message_new.concat("\n");
+                        try message_line_wrapped.reset(message_word.bytes.items);
                     }
 
-                    start_slice += len_line_max;
-
-                    if (start_slice > iter.len) {
-                        break;
-                    }
+                    try message_word.reset("");
+                }
+                // If this 'word' is not just spaces.
+                else {
+                    try message_word.concat(word.bytes);
                 }
             }
-            // If the line fits.
-            else {
-                try message_new.concat(spaces);
-                try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                try message_new.concat(" ");
 
-                try message_new.concat(iter);
-                try message_new.concat(" ");
-
-                // Add padding spaces between the text and the right box line so all the lines are the same length.
-                var n: usize = len_line_max - iter.len;
-                while (n != 0) : (n -= 1) {
-                    try message_new.concat(" ");
-                }
-
-                try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                try message_new.concat("\n");
-            }
+            // DELETED
+            // var grapheme_count: usize = try message_line.graphemeCount();
+            //
+            // // If the line is longer than can fit.
+            // if (grapheme_count > len_line_max) {
+            //     var start_slice: usize = 0;
+            //     var end_slice: usize = 0;
+            //
+            //     // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
+            //     while (start_slice < line.len) : (start_slice += len_line_max) {
+            //         try message_new.concat(spaces);
+            //         try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            //         try message_new.concat(" ");
+            //
+            //         // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
+            //         end_slice = if (start_slice + len_line_max < line.len) start_slice + len_line_max else line.len;
+            //
+            //         var slice = line[start_slice..end_slice];
+            //
+            //         // DELETED
+            //         // std.debug.print("start slice: {d}, end slice: {d}, line length: {d}, max line length: {d}, console width: {d}, slice len: {d}, grapheme count: {d}.\n", .{ start_slice, end_slice, line.len, len_line_max, widthConsoleScreenBuffer(), slice.len, grapheme_count });
+            //
+            //         try message_new.concat(slice);
+            //
+            //         // If the length of the slice is less than the max line length.
+            //         // If the slice doesn't fill the max line length.
+            //         if (slice.len < len_line_max) {
+            //             // DELETED
+            //             //std.debug.print("entuhenu\n", .{});
+            //
+            //             // Add padding spaces between the text and the right box line so all the lines are the same length.
+            //             var n: usize = len_line_max - slice.len + 1;
+            //             while (n != 0) : (n -= 1) {
+            //                 try message_new.concat(" ");
+            //             }
+            //
+            //             try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            //             try message_new.concat("\n");
+            //
+            //             break;
+            //         }
+            //         // If the slice fills the max line length.
+            //         else {
+            //             try message_new.concat(" ");
+            //
+            //             try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            //             try message_new.concat("\n");
+            //         }
+            //     }
+            // }
+            // // If the line fits.
+            // else {
+            //     try message_new.concat(spaces);
+            //     try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            //     try message_new.concat(" ");
+            //
+            //     try message_new.concat(line);
+            //     try message_new.concat(" ");
+            //
+            //     // Add padding spaces between the text and the right box line so all the lines are the same length.
+            //     var n: usize = len_line_max - line.len;
+            //     while (n != 0) : (n -= 1) {
+            //         try message_new.concat(" ");
+            //     }
+            //
+            //     try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
+            //     try message_new.concat("\n");
+            // }
         }
 
         try message_new.insert(spaces, 0);
@@ -265,7 +333,6 @@ const P = struct {
         return try message_new.toOwnedSlice();
     }
 
-    // TODO For every word, add to the length, store the word, if the next word plus any punctuation is excess, treat line up to that point as the current line
     // Determine useful line max
     // insert newlines where necessary
     // pad to terminal width
