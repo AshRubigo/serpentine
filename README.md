@@ -2,12 +2,19 @@
 
 # serpentine
 
-Study app. Could become anything and change a lot, hence the name. May become a crude messaging platform.
+Study app. Could become anything, changing frequently, hence the name. A crude messaging platform is a possibility.
 
 ## Rough intial roadmap
 
-- [x] Command line arguments, using Clap for now.
+- [x] Basic command line arguments, using Clap for now.
 - [ ] Debugging conveniences.
+    - [x] Print indentation.
+    - [x] Print surrounded by box.
+    - [x] Print centred.
+    - [ ] Print background colours.
+- [ ] Create functional tests.
+- [ ] Compile on Linux.
+- [ ] Auto documentation.
 - [ ] Create database.
 - [ ] Create server.
 - [ ] Create client.
@@ -22,7 +29,7 @@ Study app. Could become anything and change a lot, hence the name. May become a 
 Study goals and by extension app goals, in no particular order:
 
 - [ ] Learn Zig. All code will be in Zig.
-- [ ] Documentation. Learn to document using Zig properly, and make that documentation available.
+- [ ] Auto documentation. Learn to document using Zig properly, and make that documentation available.
 - [ ] Modules, including themes.
     - [ ] Unsandboxed mods that require user trust. `.dll`s?
     - [ ] Sandboxed mods. No trust unnecessary from the user, requires interpreter?
