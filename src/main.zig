@@ -87,45 +87,69 @@ const ascii_codes = AsciiCodes{
     .box_cross = "n",
 };
 
-fn widthConsoleScreenBuffer() usize {
-    var terminal: std.fs.File = std.io.getStdErr();
+fn widthConsoleScreenBuffer() !usize {
+    var terminal = std.io.getStdErr();
 
     var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
 
-    _ = std.os.windows.kernel32.GetConsoleScreenBufferInfo(terminal.handle, &info);
+    _ = std.os.windows.kernel32.GetConsoleScreenBufferInfo(
+        terminal.handle,
+        &info,
+    );
 
-    return @intCast(usize, info.dwSize.X);
+    try std.testing.expect(info.dwSize.X >= 0);
+
+    return @intCast(
+        usize,
+        info.dwSize.X,
+    );
 }
 
 // Print utility struct.
-const P = struct {
+const Print = struct {
     _level: usize = 0,
 
     // Indent. Do this at the start of functions and defer P.o() to outdent.
-    fn i(self: *P) void {
+    fn i(self: *Print) void {
         self._level += 2;
     }
 
     // Outdent.
-    fn o(self: *P) void {
+    fn o(self: *Print) void {
         self._level -= 2;
     }
 
     // Convenience function for enabling and disabling the decimal line drawing character set.
-    fn characterSetDecimalLineDrawing(allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-        return try std.fmt.allocPrint(allocator, ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii, args);
+    fn characterSetDecimalLineDrawing(
+        allocator: std.mem.Allocator,
+        comptime message: []const u8,
+        args: anytype,
+    ) ![]const u8 {
+        return try std.fmt.allocPrint(
+            allocator,
+            ascii_codes.character_set_decimal_line_drawing ++ message ++ ascii_codes.character_set_ansii,
+            args,
+        );
     }
 
-    fn lenLineMax(self: *P, allocator: std.mem.Allocator, message_formatted: zigstr, padding: usize) !usize {
+    fn lenLineMax(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        message_formatted: zigstr,
+        border: usize,
+    ) !usize {
         // Tokenize the formatted message by newlines.
         var iter_message_formatted = message_formatted.lineIter();
 
         var len_line_max: usize = 0;
 
-        var message_line = try zigstr.fromBytes(allocator, "");
+        var message_line = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
         defer message_line.deinit();
 
-        // TODO This should only count combining or visible characters. That may involve accounting for specific terminals.
+        // TODO This only works for UTF-8, it does not understand terminal specific escape sequences.
         //
         // For every line of the message.
         while (iter_message_formatted.next()) |iter| {
@@ -138,349 +162,658 @@ const P = struct {
             }
         }
 
-        const width_console_screen_buffer = widthConsoleScreenBuffer();
+        const width_console_screen_buffer = try widthConsoleScreenBuffer();
 
-        if (len_line_max > width_console_screen_buffer - self._level - padding) {
-            len_line_max = width_console_screen_buffer - self._level - padding;
-        }
+        try std.testing.expect(width_console_screen_buffer - self._level - border >= 0);
+
+        const len_line_max_console = width_console_screen_buffer - self._level - border;
+
+        if (len_line_max > len_line_max_console) len_line_max = len_line_max_console;
 
         return len_line_max;
     }
 
-    // TODO For every word, add to the length, store the word, if the next word plus any punctuation is excess, treat line up to that point as the current line
-    fn surroundBox(self: *P, allocator: std.mem.Allocator, message_formatted: zigstr, len_line_max: usize) ![]const u8 {
-        // Tokenize the formatted message by newlines.
-        var iter_message_formatted = message_formatted.lineIter();
+    fn boxLeft(
+        allocator: std.mem.Allocator,
+        spaces: []const u8,
+    ) ![]const u8 {
+        var box = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer box.deinit();
 
-        // This will store each line of the string.
-        var message_new = try zigstr.fromBytes(allocator, "");
-        errdefer message_new.deinit();
+        try box.concat(spaces);
+        try box.concat(
+            try characterSetDecimalLineDrawing(
+                allocator,
+                ascii_codes.box_vertical,
+                .{},
+            ),
+        );
+        try box.concat(" ");
 
-        var message_line = try zigstr.fromBytes(allocator, "");
-        defer message_line.deinit();
+        return box.toOwnedSlice();
+    }
 
-        var message_line_wrapped = try zigstr.fromBytes(allocator, "");
-        defer message_line_wrapped.deinit();
+    fn boxRight(allocator: std.mem.Allocator) ![]const u8 {
+        var box = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer box.deinit();
 
-        var temp_word = try zigstr.fromBytes(allocator, "");
-        defer temp_word.deinit();
+        try box.concat(" ");
+        try box.concat(
+            try characterSetDecimalLineDrawing(
+                allocator,
+                ascii_codes.box_vertical,
+                .{},
+            ),
+        );
+        try box.concat("\n");
 
-        var message_word = try zigstr.fromBytes(allocator, "");
-        defer message_word.deinit();
+        return box.toOwnedSlice();
+    }
 
-        iter_message_formatted.reset();
+    fn padding(
+        allocator: std.mem.Allocator,
+        len_line: usize,
+        len_line_max: usize,
+    ) ![]const u8 {
+        var return_padding = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer return_padding.deinit();
 
-        const spaces: []const u8 = try self.generate_spaces(allocator);
+        // Add padding spaces between the text and the right box line so all the lines are the same length.
+        var n: usize = len_line_max - len_line;
 
-        // For every line of the message.
-        while (iter_message_formatted.next()) |line| {
-            try message_line.reset(line);
+        while (n != 0) : (n -= 1) {
+            try return_padding.concat(" ");
+        }
 
-            var iter_word = try ziglyph.Word.WordIterator.init(line);
+        return return_padding.toOwnedSlice();
+    }
 
-            // For every word of the line.
-            while (iter_word.next()) |word| {
-                try temp_word.reset(word.bytes);
+    fn concatLineWrapped(
+        allocator: std.mem.Allocator,
+        message_new: *zigstr,
+        line_wrapped: *zigstr,
+        len_line_max: usize,
+        prepend: []const u8,
+        append: []const u8,
+    ) !void {
+        try message_new.concat(prepend);
 
-                // If this 'word' is just spaces.
-                if (try temp_word.isBlank()) {
-                    // If the word fits in the console.
-                    if ((try message_line_wrapped.graphemeCount()) + (try message_word.graphemeCount()) + 1 < len_line_max) {
-                        try message_line_wrapped.concat(" ");
-                        try message_line_wrapped.concat(message_word.bytes.items);
-                    }
-                    // If the word does not fit in the console.
-                    else {
-                        try message_new.concat(spaces);
-                        try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                        try message_new.concat(" ");
-                        try message_new.concat(message_line_wrapped.bytes.items);
+        try message_new.concat(line_wrapped.bytes.items);
 
-                        // If the length of the slice is less than the max line length.
-                        // If the slice doesn't fill the max line length.
-                        if ((try message_line_wrapped.graphemeCount()) < len_line_max) {
-                            // DELETED
-                            //std.debug.print("entuhenu\n", .{});
+        const count_grapheme_line_wrapped: usize = try line_wrapped.graphemeCount();
 
-                            // DELETED
-                            // var blah: usize = 0;
-                            // if (@subWithOverflow(usize, len_line_max, (try message_line_wrapped.graphemeCount()) + 1, &blah)) {
-                            //     @panic("aousnthu");
-                            // }
+        // If the length of the wrapped line is less than the max line length.
+        // If the wrapped line doesn't fill the max line length.
+        if (count_grapheme_line_wrapped < len_line_max) {
+            try message_new.concat(
+                padding(
+                    allocator,
+                    message_new,
+                    count_grapheme_line_wrapped,
+                    len_line_max,
+                ),
+            );
+        }
 
-                            // Add padding spaces between the text and the right box line so all the lines are the same length.
-                            var n: usize = len_line_max - (try message_line_wrapped.graphemeCount()) + 1;
+        try message_new.concat(append);
+    }
 
-                            while (n != 0) : (n -= 1) {
-                                try message_new.concat(" ");
-                            }
+    // Note: The word will start on a new line, but might not end on a new line.
+    fn concatLineByGrapheme(
+        allocator: std.mem.Allocator,
+        message_new: *zigstr,
+        line_wrapped: *zigstr,
+        indentation: *zigstr,
+        len_line_max: usize,
+        word_next_null: bool,
+        line_next_null: bool,
+    ) !void {
+        try std.testing.expect(line_wrapped.bytes.items.len > 0);
 
-                            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                            try message_new.concat("\n");
+        // Graphemes.
+        var iter_grapheme = try ziglyph.Grapheme.GraphemeIterator.init(line_wrapped.bytes.items);
 
-                            break;
-                        }
-                        // If the slice fills the max line length.
-                        else {
-                            try message_new.concat(" ");
+        var line_wrapped_grapheme = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        defer line_wrapped_grapheme.deinit();
 
-                            try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-                            try message_new.concat("\n");
-                        }
+        var count_i: usize = 1;
 
-                        try message_line_wrapped.reset(message_word.bytes.items);
-                    }
+        // For every grapheme of the line.
+        while (iter_grapheme.next()) |grapheme| : (count_i += 1) {
+            try line_wrapped_grapheme.concat(grapheme.bytes);
 
-                    try message_word.reset("");
-                }
-                // If this 'word' is not just spaces.
-                else {
-                    try message_word.concat(word.bytes);
+            var iter_grapheme_next = iter_grapheme;
+
+            // If we have reached the max line length.
+            if (count_i + (try indentation.graphemeCount()) == len_line_max) {
+                count_i = 0;
+
+                try message_new.concat(indentation.bytes.items);
+
+                try message_new.concat(line_wrapped_grapheme.bytes.items);
+
+                if (word_next_null and !line_next_null) try message_new.concat("\n");
+
+                // If there is no next grapheme.
+                if (iter_grapheme_next.next() == null) {
+                    // This wrapped line is full, so we can reset it and the spaces hit.
+                    try line_wrapped.reset("");
+                } else {
+                    try line_wrapped_grapheme.reset("");
                 }
             }
+            // If there is no next grapheme.
+            else if (iter_grapheme_next.next() == null) {
+                // If there are no more words on this line.
+                if (word_next_null) {
+                    try message_new.concat(indentation.bytes.items);
 
-            // DELETED
-            // var grapheme_count: usize = try message_line.graphemeCount();
-            //
-            // // If the line is longer than can fit.
-            // if (grapheme_count > len_line_max) {
-            //     var start_slice: usize = 0;
-            //     var end_slice: usize = 0;
-            //
-            //     // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
-            //     while (start_slice < line.len) : (start_slice += len_line_max) {
-            //         try message_new.concat(spaces);
-            //         try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            //         try message_new.concat(" ");
-            //
-            //         // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
-            //         end_slice = if (start_slice + len_line_max < line.len) start_slice + len_line_max else line.len;
-            //
-            //         var slice = line[start_slice..end_slice];
-            //
-            //         // DELETED
-            //         // std.debug.print("start slice: {d}, end slice: {d}, line length: {d}, max line length: {d}, console width: {d}, slice len: {d}, grapheme count: {d}.\n", .{ start_slice, end_slice, line.len, len_line_max, widthConsoleScreenBuffer(), slice.len, grapheme_count });
-            //
-            //         try message_new.concat(slice);
-            //
-            //         // If the length of the slice is less than the max line length.
-            //         // If the slice doesn't fill the max line length.
-            //         if (slice.len < len_line_max) {
-            //             // DELETED
-            //             //std.debug.print("entuhenu\n", .{});
-            //
-            //             // Add padding spaces between the text and the right box line so all the lines are the same length.
-            //             var n: usize = len_line_max - slice.len + 1;
-            //             while (n != 0) : (n -= 1) {
-            //                 try message_new.concat(" ");
-            //             }
-            //
-            //             try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            //             try message_new.concat("\n");
-            //
-            //             break;
-            //         }
-            //         // If the slice fills the max line length.
-            //         else {
-            //             try message_new.concat(" ");
-            //
-            //             try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            //             try message_new.concat("\n");
-            //         }
-            //     }
-            // }
-            // // If the line fits.
-            // else {
-            //     try message_new.concat(spaces);
-            //     try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            //     try message_new.concat(" ");
-            //
-            //     try message_new.concat(line);
-            //     try message_new.concat(" ");
-            //
-            //     // Add padding spaces between the text and the right box line so all the lines are the same length.
-            //     var n: usize = len_line_max - line.len;
-            //     while (n != 0) : (n -= 1) {
-            //         try message_new.concat(" ");
-            //     }
-            //
-            //     try message_new.concat(try characterSetDecimalLineDrawing(allocator, ascii_codes.box_vertical, .{}));
-            //     try message_new.concat("\n");
-            // }
+                    try message_new.concat(line_wrapped_grapheme.bytes.items);
+
+                    if (!line_next_null) try message_new.concat("\n");
+
+                    try line_wrapped.reset("");
+                }
+                // If there are more words on this line.
+                else {
+                    // There are words after the last part of this word, so if the last part of this word doesn't fill the max line length should be concatenated to message_line_wrapped and the loop should continue as normal.
+                    try resetNormalWordToLineWrapped(
+                        line_wrapped,
+                        &line_wrapped_grapheme,
+                    );
+                }
+            }
+        }
+    }
+
+    // Concatenate a normal word to the wrapped line.
+    fn concatNormalWordToLineWrapped(
+        line_wrapped: *zigstr,
+        word_normal: *zigstr,
+    ) !void {
+        try line_wrapped.concat(word_normal.bytes.items);
+    }
+
+    // Concatenate a normal word to the wrapped line.
+    fn resetNormalWordToLineWrapped(
+        line_wrapped: *zigstr,
+        word_normal: *zigstr,
+    ) !void {
+        try line_wrapped.reset(word_normal.bytes.items);
+    }
+
+    // Concatenate the wrapped line to the new message.
+    fn concatLineWrappedToMessageNew(
+        allocator: std.mem.Allocator,
+        message_new: *zigstr,
+        line_wrapped: *zigstr,
+        indentation: *zigstr,
+        len_line_max: usize,
+        word_next_null: bool,
+        line_next_null: bool,
+    ) !void {
+        // If the wrapped line fits in the console.
+        if ((try line_wrapped.graphemeCount()) <= len_line_max) {
+            try message_new.concat(indentation.bytes.items);
+
+            try message_new.concat(line_wrapped.bytes.items);
+
+            if (!line_next_null) try message_new.concat("\n");
+
+            try line_wrapped.reset("");
+        }
+        // If the wrapped line doesn't fit in the console, this means it only has one word, but that word is longer than the console width.
+        else {
+            try concatLineByGrapheme(
+                allocator,
+                message_new,
+                line_wrapped,
+                indentation,
+                len_line_max,
+                word_next_null,
+                line_next_null,
+            );
+        }
+    }
+
+    // Expects:
+    // - a non-empty normal word.
+    //
+    // Results:
+    // - an empty or non-empty wrapped line.
+    // - an empty normal word.
+    fn wrapUtil(
+        allocator: std.mem.Allocator,
+        message_new: *zigstr,
+        line_wrapped: *zigstr,
+        word_normal: *zigstr,
+        indentation: *zigstr,
+        len_line_max: usize,
+        first_word: bool,
+        word_next_null: bool,
+        line_next_null: bool,
+    ) !void {
+        try std.testing.expect(word_normal.bytes.items.len > 0);
+
+        // The length of the current line if the next word would be concatenated, notwithstanding indentation or box.
+        var len_line: usize = (try indentation.graphemeCount()) + (try line_wrapped.graphemeCount()) + (try word_normal.graphemeCount());
+
+        // If the wrapped line and the word plus a space fits in the console.
+        if (!first_word and len_line + 1 + (try indentation.graphemeCount()) <= len_line_max) {
+            try line_wrapped.concat(" ");
+
+            try concatNormalWordToLineWrapped(
+                line_wrapped,
+                word_normal,
+            );
+        }
+        // If the wrapped line and the word fits in the console.
+        else if (first_word and len_line + (try indentation.graphemeCount()) <= len_line_max) {
+            try concatNormalWordToLineWrapped(
+                line_wrapped,
+                word_normal,
+            );
+        }
+        // If the wrapped line and the word doesn't fit in the console.
+        else {
+            // If the wrapped line is not empty.
+            if (line_wrapped.bytes.items.len != 0) {
+                try concatLineWrappedToMessageNew(
+                    allocator,
+                    message_new,
+                    line_wrapped,
+                    indentation,
+                    len_line_max,
+                    word_next_null,
+                    line_next_null,
+                );
+            }
+
+            try resetNormalWordToLineWrapped(
+                line_wrapped,
+                word_normal,
+            );
         }
 
-        try message_new.insert(spaces, 0);
-        try message_new.insert(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left, self._level);
-        try message_new.concat(spaces);
-        try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+        // We are done with this word. The loop will start constructing a new word now.
+        try word_normal.reset("");
+    }
 
-        const len_top_left = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
+    // - Input must be UTF-8 only.
+    // - Trims spaces at the end of each line.
+    // - Multiple spaces between words are reduced to 1 space.
+    // - Spaces between words that have been separated onto different lines by wrapping are removed.
+    // - Preserves spaces at the start of each line. These spaces are considered indentations and will be prepended to wrapped lines.
+    // - Indentations are considered part of the first word of each line, which is revelant to wrapping.
+    // - Can handle words longer than the max width will allow.
+    fn wrap(
+        allocator: std.mem.Allocator,
+        message_formatted: *zigstr,
+        len_line_max: usize,
+    ) ![]const u8 {
+        try std.testing.expect(message_formatted.bytes.items.len > 0);
 
-        var j: usize = len_top_left + self._level;
+        // Stores the string that this function will return.
+        var message_new = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer message_new.deinit();
 
-        // Create the horizontal lines for the box.
-        //
-        // Messages are variable in length, so this also needs to be.
-        while (j < (len_line_max + len_top_left + 2 + self._level)) : (j += 1) {
-            try message_new.insert(ascii_codes.box_horizontal, j);
-            try message_new.concat(ascii_codes.box_horizontal);
+        // Each input line might be longer that the console, so will need wrapping. This holds each wrapped line as they are created.
+        var line_wrapped = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        defer line_wrapped.deinit();
+
+        // This is just for a function from zigstr that is useful.
+        var word_unicode = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        defer word_unicode.deinit();
+
+        // This holds each word of each line. Words are separated by spaces and might contain punctuation. This is different from the unicode idea of a word.
+        var word_normal = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        defer word_normal.deinit();
+
+        var indentation = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer indentation.deinit();
+
+        // This will store each line of the input string.
+        var line_raw = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        defer line_raw.deinit();
+
+        // Tokenize the formatted message by newlines.
+        var iter_lines_raw = message_formatted.lineIter();
+
+        // For every line of the message.
+        while (iter_lines_raw.next()) |line_raw_temp| {
+            try line_raw.reset(line_raw_temp);
+            try indentation.reset("");
+
+            try line_raw.trimRight(" ");
+
+            var iter_lines_raw_next = iter_lines_raw;
+
+            var first_word = true;
+            var line_start = true;
+            const line_next_null = iter_lines_raw_next.next() == null;
+
+            // If the entire line is blank.
+            // No need to bother with all the logic.
+            if (try line_raw.isBlank()) {
+                try std.testing.expect(line_wrapped.bytes.items.len == 0);
+
+                if (!line_next_null) {
+                    if (len_line_max != 0) {
+                        try message_new.concat(try padding(allocator, 0, len_line_max));
+                    }
+
+                    if (!line_next_null) try message_new.concat("\n");
+                }
+            }
+            // If the entire line isn't blank.
+            else {
+                try std.testing.expect(try line_wrapped.isBlank());
+                try std.testing.expect(try word_normal.isBlank());
+
+                // Unicode words.
+                var iter_words_unicode = try ziglyph.Word.WordIterator.init(line_raw_temp);
+
+                // For every word of the line.
+                //
+                // We are doing 3 things here:
+                // - Concatenating to the word. Expects a non empty unicode word.
+                // - Concatenating to the wrapped line. Expects a non empty normal word.
+                // - Concatenating to the new message. Expects a wrapped line.
+                while (iter_words_unicode.next()) |word_unicode_temp| {
+                    try word_unicode.reset(word_unicode_temp.bytes);
+
+                    var iter_word_next = iter_words_unicode;
+
+                    // Whether the current unicode word only contains spaces.
+                    const word_unicode_blank = try word_unicode.isBlank();
+                    // Whether the next unicode word is null.
+                    const word_next_null = iter_word_next.next() == null;
+
+                    // If this unicode word is just spaces.
+                    // Note: Because we trimmed each line, we know the next unicode word cannot be null if this one is spaces.
+                    if (word_unicode_blank) {
+                        // If we have not hit normal word character.
+                        if (line_start) {
+                            try indentation.concat(word_unicode_temp.bytes);
+                        }
+                        // If we have hit a normal word character.
+                        else {
+                            try wrapUtil(
+                                allocator,
+                                &message_new,
+                                &line_wrapped,
+                                &word_normal,
+                                &indentation,
+                                len_line_max,
+                                first_word,
+                                word_next_null,
+                                line_next_null,
+                            );
+
+                            // If the next word is null, we need to do this here, because there won't be another iteration for this to happen.
+                            if (!(try line_wrapped.isBlank()) and word_next_null) {
+                                try concatLineWrappedToMessageNew(
+                                    allocator,
+                                    &message_new,
+                                    &line_wrapped,
+                                    &indentation,
+                                    len_line_max,
+                                    word_next_null,
+                                    line_next_null,
+                                );
+
+                                try std.testing.expect((try line_wrapped.isBlank()));
+                            }
+
+                            if (first_word) first_word = false;
+                        }
+                    }
+                    // If this 'word' is not just spaces.
+                    else {
+                        // Construct a word.
+                        try word_normal.concat(word_unicode_temp.bytes);
+
+                        line_start = false;
+
+                        // If the next word is null, we need to do this here, because there won't be another iteration for this to happen.
+                        if (word_next_null) {
+                            // If there are no other words in the wrapped line.
+                            if (line_wrapped.bytes.items.len == 0) {
+                                try concatNormalWordToLineWrapped(
+                                    &line_wrapped,
+                                    &word_normal,
+                                );
+                            }
+                            // If there are already words in the wrapped line.
+                            else {
+                                try wrapUtil(
+                                    allocator,
+                                    &message_new,
+                                    &line_wrapped,
+                                    &word_normal,
+                                    &indentation,
+                                    len_line_max,
+                                    first_word,
+                                    word_next_null,
+                                    line_next_null,
+                                );
+                            }
+
+                            try concatLineWrappedToMessageNew(
+                                allocator,
+                                &message_new,
+                                &line_wrapped,
+                                &indentation,
+                                len_line_max,
+                                word_next_null,
+                                line_next_null,
+                            );
+
+                            try word_normal.reset("");
+
+                            try std.testing.expect(line_wrapped.bytes.items.len == 0);
+                        }
+                    }
+                }
+            }
         }
 
-        try message_new.insert(ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n", j);
-        try message_new.concat(ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n");
+        // If message_new is empty at this point, an integer overflow occurs in message_new.insert(), not sure why, but it shouldn't be empty anyway.
+        try std.testing.expect(message_new.bytes.items.len > 0);
 
         // Return the entire message.
         return try message_new.toOwnedSlice();
     }
 
-    // Determine useful line max
-    // insert newlines where necessary
-    // pad to terminal width
+    // Surround the input text in a box, where the width of the box is as large as the console will allow.
     //
-    // surroundbox would need to be aware of the number of indentations
-    fn surroundBoxMax(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-        // Format the message so we can get the true length, and convert it to a more useful string.
-        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
-        defer message_formatted.deinit();
-
-        return try self.surroundBox(allocator, message_formatted, widthConsoleScreenBuffer() - 4 - self._level);
-    }
-
-    // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
-    //
-    // Return the input of a single or multiline string surrounded by a box, which can then be printed.
-    // Utilizes the decimal line drawing character set for the box characters.
-    //
-    // A limitation of this is that the line length count does not account for the ascii escape characters for the terminal perfectly, so the input is restricted to multiline strings of UTF-8 characters and zig string escapes.
-    //
-    // Example:
+    // // Example:
     // ```
     // Input:
-    // surroundBox(
+    // surroundBoxMax(
     //   \\Hi
     //   \\World.
     //   ,.{});
     //
     // Output:
-    // ┌────────┐
-    // │ Hi     │
-    // │ World. │
-    // └────────┘
+    // ┌─────────────┐// Console width.
+    // │ Hi          │//
+    // │ World.      │//
+    // └─────────────┘//
     // ```
+    fn surroundBoxMax(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        comptime message: []const u8,
+        args: anytype,
+    ) ![]const u8 {
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(
+            allocator,
+            try std.fmt.allocPrint(
+                allocator,
+                message,
+                args,
+            ),
+        );
+        defer message_formatted.deinit();
+
+        const len_border: usize = 4;
+
+        return try self.indentBox(
+            allocator,
+            &message_formatted,
+            (try widthConsoleScreenBuffer()) - len_border - self._level,
+        );
+    }
+
+    // Example:
+    // ```
+    // Input:
+    // surroundBoxFit(
+    //   \\Hi
+    //   \\World.
+    //   ,.{});
     //
-    // TODO Alternative to the decimal line drawing character set is the following. Not quite so neat.
+    // Output:
+    // ┌────────┐     // Console width.
+    // │ Hi     │     //
+    // │ World. │     //
+    // └────────┘     //
     // ```
-    // +--------+
-    // | Hi     |
-    // | World. |
-    // +--------+
-    // ```
-    fn surroundBoxFit(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
+    fn surroundBoxFit(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        comptime message: []const u8,
+        args: anytype,
+    ) ![]const u8 {
         // Format the message so we can get the true length, and convert it to a more useful string.
-        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
+        var message_formatted = try zigstr.fromBytes(
+            allocator,
+            try std.fmt.allocPrint(
+                allocator,
+                message,
+                args,
+            ),
+        );
         defer message_formatted.deinit();
 
-        return try self.surroundBox(allocator, message_formatted, try self.lenLineMax(allocator, message_formatted, 4));
+        return try self.indentBox(
+            allocator,
+            &message_formatted,
+            try self.lenLineMax(
+                allocator,
+                message_formatted,
+                4,
+            ),
+        );
     }
 
-    // TODO Take input, wrap it in preparation for indent()
-    fn wrap(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-        // Format the message so we can get the true length, and convert it to a more useful string.
-        var message_formatted = try zigstr.fromBytes(allocator, try std.fmt.allocPrint(allocator, message, args));
-        defer message_formatted.deinit();
-
-        // Tokenize the formatted message by newlines.
-        var iter_message_formatted = message_formatted.lineIter();
-
-        // Determine the longest line.
-        const len_line_max: usize = try self.lenLineMax(allocator, message_formatted, 0);
-
-        iter_message_formatted.reset();
-
-        // This will store each line of the output string.
-        var message_new = try zigstr.fromBytes(allocator, "");
-        errdefer message_new.deinit();
-
-        var message_line = try zigstr.fromBytes(allocator, "");
-        defer message_line.deinit();
-
-        // For every line of the message.
-        while (iter_message_formatted.next()) |iter| {
-            try message_line.reset(iter);
-
-            const grapheme_count: usize = try message_line.graphemeCount();
-
-            // If the line is longer than can fit.
-            if (grapheme_count > len_line_max) {
-                var start_slice: usize = 0;
-                var end_slice: usize = 0;
-
-                // While `start_slice` is less than the length of the current line plus the max line length minus 1. This is because the last slice might not fill the max line length.
-                while (true) {
-                    // TODO Need to wrap by words.
-
-                    // If the start of this slice plus the maximum line length does not exceed the length of this line of the message.
-                    end_slice = if (start_slice + len_line_max < iter.len) len_line_max else iter.len;
-
-                    //std.debug.print("start slice: {d}, end slice: {d}, iter length: {d}, console width: {d}.\n", .{ start_slice, end_slice, iter.len, len_line_max });
-
-                    var slice = iter[start_slice..end_slice];
-                    try message_new.concat(slice);
-                    try message_new.concat("\n");
-
-                    start_slice += len_line_max;
-
-                    if (start_slice >= iter.len) {
-                        break;
-                    }
-                }
-            }
-            // If the line fits.
-            else {
-                try message_new.concat(iter);
-                try message_new.concat("\n");
-            }
-        }
-
-        // Return the entire message.
-        return try message_new.toOwnedSlice();
-    }
-
-    fn generate_spaces(self: *P, allocator: std.mem.Allocator) ![]const u8 {
-        var string_spaces = try zigstr.fromBytes(allocator, " ");
+    fn generateSpaces(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        extra: usize,
+    ) ![]const u8 {
+        var string_spaces = try zigstr.fromBytes(
+            allocator,
+            " ",
+        );
         defer string_spaces.deinit();
 
         // Repeat the spaces by the number of indentations required.
-        try string_spaces.repeat(self._level);
+        try string_spaces.repeat(self._level + extra);
 
         return try string_spaces.toOwnedSlice();
     }
 
     // Indent using spaces, each indentation is 2 spaces.
-    fn indent(self: *P, allocator: std.mem.Allocator, comptime message: []const u8, args: anytype) ![]const u8 {
-        var message_formatted = try zigstr.fromBytes(allocator, try self.wrap(allocator, message, args));
+    fn indent(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        comptime message: []const u8,
+        args: anytype,
+    ) ![]const u8 {
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(
+            allocator,
+            try std.fmt.allocPrint(
+                allocator,
+                message,
+                args,
+            ),
+        );
         defer message_formatted.deinit();
 
-        // Tokenize the formatted message by newlines.
-        var iter_message_formatted = message_formatted.lineIter();
+        var message_wrapped = try zigstr.fromBytes(
+            allocator,
+            try wrap(
+                allocator,
+                &message_formatted,
+                try self.lenLineMax(
+                    allocator,
+                    message_formatted,
+                    0,
+                ),
+            ),
+        );
+        defer message_wrapped.deinit();
 
-        // This will store each line of the string.
-        var message_new = try zigstr.fromBytes(allocator, "");
+        var message_new = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
         errdefer message_new.deinit();
 
-        const spaces: []const u8 = try self.generate_spaces(allocator);
+        const spaces = try self.generateSpaces(
+            allocator,
+            2,
+        );
+
+        // Tokenize the formatted message by newlines.
+        var iter_lines = message_wrapped.lineIter();
 
         // For every line of the message.
-        while (iter_message_formatted.next()) |iter| {
-            // If the last line of the input message has a `\n` at the end of it, then the tokenization will count that as a blank line, so we don't want to add spaces for that last line.
-            if (iter.len > 1) {
+        while (iter_lines.next()) |line| {
+            var iter_lines_next = iter_lines;
+
+            // If there is no next line.
+            //
+            // TODO Not sure why this is necessary. Maybe something to do with the way zigstr splits the lines.
+            if (iter_lines_next.next() != null) {
                 try message_new.concat(spaces);
-            }
-            try message_new.concat(iter);
 
-            var iter_message_formatted_next = iter_message_formatted;
+                try message_new.concat(line);
 
-            if (iter_message_formatted_next.next() != null) {
                 try message_new.concat("\n");
             }
         }
@@ -488,10 +821,113 @@ const P = struct {
         return message_new.toOwnedSlice();
     }
 
+    // TODO Why is the decimal line drawing character set necessary? Windows Terminal seems to understand the raw characters, is it something on the Zig side? Isn't ASCII a subset of UTF-8?
+    //
+    // Return the input of a single or multiline string surrounded by a box, which can then be printed.
+    // Utilizes the decimal line drawing character set for the box characters.
+    //
+    // A limitation of this is that the line length count does not account for the ascii escape characters for the terminal perfectly, so the input is restricted to multiline strings of UTF-8 characters and zig string escapes. This means the result of this function cannot be fed into the function.
+    fn indentBox(
+        self: *Print,
+        allocator: std.mem.Allocator,
+        message_formatted: *zigstr,
+        len_line_max: usize,
+    ) ![]const u8 {
+        var message_wrapped = try zigstr.fromBytes(
+            allocator,
+            try wrap(
+                allocator,
+                message_formatted,
+                len_line_max,
+            ),
+        );
+        errdefer message_wrapped.deinit();
+
+        var message_new = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer message_new.deinit();
+
+        const spaces = try self.generateSpaces(
+            allocator,
+            0,
+        );
+
+        // Tokenize the new message by newlines.
+        var iter_lines = message_wrapped.lineIter();
+
+        // For every line of the message.
+        while (iter_lines.next()) |line| {
+            try message_new.concat(
+                try boxLeft(
+                    allocator,
+                    spaces,
+                ),
+            );
+
+            try message_new.concat(line);
+
+            try message_new.concat(
+                try padding(
+                    allocator,
+                    line.len,
+                    len_line_max,
+                ),
+            );
+
+            try message_new.concat(
+                try boxRight(allocator),
+            );
+        }
+
+        // Add the left corners.
+        try message_new.insert(
+            spaces,
+            0,
+        );
+        try message_new.insert(
+            ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_top_left,
+            self._level,
+        );
+        try message_new.concat(spaces);
+        try message_new.concat(ascii_codes.character_set_decimal_line_drawing ++ ascii_codes.box_bottom_left);
+
+        const len_top_left = ascii_codes.character_set_decimal_line_drawing.len + ascii_codes.box_top_left.len;
+
+        var j = len_top_left + self._level;
+
+        // Create the horizontal borders.
+        //
+        // Messages are variable in length, so this also needs to be.
+        while (j < (len_line_max + len_top_left + 2 + self._level)) : (j += 1) {
+            try message_new.insert(
+                ascii_codes.box_horizontal,
+                j,
+            );
+            try message_new.concat(ascii_codes.box_horizontal);
+        }
+
+        // Add the right corners.
+        try message_new.insert(
+            ascii_codes.box_top_right ++ ascii_codes.character_set_ansii ++ "\n",
+            j,
+        );
+        try message_new.concat(
+            ascii_codes.box_bottom_right ++ ascii_codes.character_set_ansii ++ "\n",
+        );
+
+        return try message_new.toOwnedSlice();
+    }
+
     // TODO make box max width of terminal, while accounting for indentations
     //
     // Debug printing utility.
-    fn printHeading(self: *P, comptime message: []const u8, args: anytype) !void {
+    fn heading(
+        self: *Print,
+        comptime message: []const u8,
+        args: anytype,
+    ) !void {
         // Memory allocator.
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -499,14 +935,25 @@ const P = struct {
 
         // TODO Get coloured background to output as expected.
 
-        const surrounded: []const u8 = try self.surroundBoxFit(arena_allocator, message, args);
+        const surrounded = try self.surroundBoxMax(
+            arena_allocator,
+            message,
+            args,
+        );
         //const indented: []const u8 = try self.indent(arena_allocator, "{s}", .{surrounded});
 
-        std.debug.print("{s}", .{surrounded});
+        std.debug.print(
+            "{s}",
+            .{surrounded},
+        );
     }
 
     // Debug printing utility.
-    fn printNormal(self: *P, comptime message: []const u8, args: anytype) !void {
+    fn normal(
+        self: *Print,
+        comptime message: []const u8,
+        args: anytype,
+    ) !void {
         // Memory allocator.
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -514,13 +961,136 @@ const P = struct {
 
         // TODO Account for max width of the console so wrapping is properly wrapped.
 
-        const indented = try self.indent(arena_allocator, message ++ "\n", args);
+        const indented = try self.indent(
+            arena_allocator,
+            message ++ "\n",
+            args,
+        );
 
-        std.debug.print("{s}", .{indented});
+        std.debug.print(
+            "{s}",
+            .{indented},
+        );
+    }
+
+    // Useful for ascii art.
+    // Just prepends indentation spaces to to the front of each line, does not do any wrapping.
+    fn dumbUtil(
+        allocator: std.mem.Allocator,
+        message_formatted: *zigstr,
+        spaces: []const u8,
+    ) ![]const u8 {
+        var message_new = try zigstr.fromBytes(
+            allocator,
+            "",
+        );
+        errdefer message_new.deinit();
+
+        // Tokenize the formatted message by newlines.
+        var iter_lines = message_formatted.lineIter();
+
+        // For every line of the message.
+        while (iter_lines.next()) |line| {
+            try message_new.concat(spaces);
+
+            try message_new.concat(line);
+
+            try message_new.concat("\n");
+        }
+
+        return message_new.toOwnedSlice();
+    }
+
+    // Useful for ascii art.
+    // Just prepends indentation spaces to to the front of each line, does not do any wrapping.
+    fn dumbCentred(
+        self: *Print,
+        comptime message: []const u8,
+        args: anytype,
+    ) !void {
+        // Memory allocator.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(
+            allocator,
+            try std.fmt.allocPrint(
+                allocator,
+                message,
+                args,
+            ),
+        );
+        defer message_formatted.deinit();
+
+        const len_line_max = try self.lenLineMax(
+            allocator,
+            message_formatted,
+            0,
+        );
+
+        var spaces = try zigstr.fromBytes(
+            allocator,
+            " ",
+        );
+        defer spaces.deinit();
+
+        // Repeat the spaces by the number of indentations required.
+        try spaces.repeat(((try widthConsoleScreenBuffer()) - len_line_max) / 2);
+
+        var dumbed = try dumbUtil(
+            allocator,
+            &message_formatted,
+            spaces.bytes.items,
+        );
+
+        std.debug.print(
+            "{s}",
+            .{dumbed},
+        );
+    }
+
+    // Useful for ascii art.
+    // Just prepends indentation spaces to to the front of each line, does not do any wrapping.
+    fn dumb(
+        self: *Print,
+        comptime message: []const u8,
+        args: anytype,
+    ) !void {
+        // Memory allocator.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        // Format the message so we can get the true length, and convert it to a more useful string.
+        var message_formatted = try zigstr.fromBytes(
+            allocator,
+            try std.fmt.allocPrint(
+                allocator,
+                message,
+                args,
+            ),
+        );
+        defer message_formatted.deinit();
+
+        var dumbed = try dumbUtil(
+            allocator,
+            &message_formatted,
+            try self.generateSpaces(
+                allocator,
+                0,
+            ),
+        );
+
+        std.debug.print(
+            "{s}",
+            .{dumbed},
+        );
     }
 };
 
-var p = P{};
+var p = Print{};
 
 fn manageArguments() !void {
     // Specify what parameters our program can take.
@@ -543,37 +1113,54 @@ fn manageArguments() !void {
     var clap_diagnostic = clap.Diagnostic{};
 
     var arguments =
-        clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &clap_diagnostic,
-    }) catch |err| {
+        clap.parse(
+        clap.Help,
+        &params,
+        clap.parsers.default,
+        .{ .diagnostic = &clap_diagnostic },
+    ) catch |err| {
         // Report useful error and exit.
-        clap_diagnostic.report(std.io.getStdErr().writer(), err) catch {};
+        clap_diagnostic.report(
+            std.io.getStdErr().writer(),
+            err,
+        ) catch {};
 
         return err;
     };
     defer arguments.deinit();
 
     if (arguments.args.help)
-        try p.printNormal(
+        try p.normal(
             \\NAME
             \\    Serpentine
             \\
             \\SYNOPSIS
             \\    TODO
-        , .{});
+        ,
+            .{},
+        );
 
-    if (arguments.args.@"test-number") |n|
-        try p.printNormal("Test number = {d}.", .{n});
+    if (arguments.args.@"test-number") |test_number|
+        try p.normal(
+            "Test number = {d}.",
+            .{test_number},
+        );
 
-    for (arguments.args.@"test-string") |s|
-        try p.printNormal("Test string = {s}.", .{s});
+    for (arguments.args.@"test-string") |test_string|
+        try p.normal(
+            "Test string = {s}.",
+            .{test_string},
+        );
 
-    for (arguments.positionals) |pos|
-        try p.printNormal("{s}", .{pos});
+    for (arguments.positionals) |positionals|
+        try p.normal(
+            "{s}",
+            .{positionals},
+        );
 }
 
 pub fn main() !void {
-    try p.printNormal(
+    try p.dumbCentred(
         \\                                _
         \\ ___      _ __        ___      | |_ _ _ __
         \\/ __| ___| '__| ___  / _ \_ __ | __(_) '_ \  ___
@@ -585,25 +1172,21 @@ pub fn main() !void {
         \\| \____/ ___ \____/ ____ \____/ ___ \____/ __/  \
         \\ \______/   \______/    \______/   \______/
         \\
-    , .{});
+    ,
+        .{},
+    );
 
-    try p.printHeading("Starting Serpentine.", .{});
-    defer p.printHeading("Ending Serpentine.", .{}) catch @panic("");
-
-    p.i();
-    p.i();
-    try p.printNormal(
-        \\A-test-sentence-that-has-no-repeating-words-which-is-assisting-in-determining-what-error-bares-responibility-of-erroneous-output.
-        \\Test line short.
-    , .{});
-    try p.printHeading(
-        \\A-test-sentence-that-has-no-repeating-words-which-is-assisting-in-determining-what-error-bares-responibility-of-erroneous-output.
-        \\Test line short.
-    , .{});
-    p.o();
-    p.o();
+    try p.heading(
+        "Serpentine start.",
+        .{},
+    );
 
     try manageArguments();
+
+    try p.heading(
+        "Serpentine end.",
+        .{},
+    );
 }
 
 test "surround box" {
@@ -612,13 +1195,18 @@ test "surround box" {
     defer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    try std.testing.expect(try p.surroundBox(arena_allocator,
-        \\Surround
-        \\box.
-    , .{}) ==
-        \\┌──────────┐
-        \\│ Surround │
-        \\│ box.     │
-        \\└──────────┘
+    try std.testing.expect(
+        try p.surroundBoxFit(
+            arena_allocator,
+            \\Surround
+            \\box.
+        ,
+            .{},
+        ) ==
+            \\┌──────────┐
+            \\│ Surround │
+            \\│ box.     │
+            \\└──────────┘
+        ,
     );
 }
